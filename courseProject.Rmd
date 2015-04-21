@@ -1,0 +1,138 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Molly Jackman"
+date: "April 14, 2015"
+output: html_document
+---
+
+##Introduction
+
+Accelerometers are typically used to measure *quantity* of exercise in which one engages.  However, while less understood, they also provide information about the quality.  This project proposes a machine learning based human activity recognition classifier.  The data are based on six participants, who performed barbell lifts with accelerometers on their belt, forearm, arm, and dumbell.  The goal is to correctly predict whether they performed the exercise correctly, and, if not, what mistake they made.  Particularly, the outcome variable takes five values indicating how the exercise was performed: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+##Data
+
+The first step is to load the required libraries:
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(lda)
+library(randomForest)
+set.seed(12321)
+```
+
+```{r, cache=TRUE}
+training <- read.csv(url("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+testing <- read.csv(url("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+```
+
+I next select a subset of observations from the training dataset to comprise a validation dataset, so that I can predict out-of-sample error before applying my model to the test data.
+
+```{r}
+inTrain <- createDataPartition(training$classe, p = 3/4)[[1]]
+training <- training[inTrain,]
+validation <- training[-inTrain,]
+```
+
+I clean the training datset and pick the features that will be used for prediction.  Particularly, I get rid of near-zero variance predictors, and exclude columns with more than 90% missing data.
+
+```{r}
+noVar <-nearZeroVar(training, saveMetrics = TRUE)
+training <- training[, !noVar$nzv]
+```
+
+I also exclude columns with more than 90% missing data.
+```{r}
+x <- training[lapply(training, function(x) sum(is.na(x)) / length(x)) > 0.9]
+missing <- names(x)
+varDrop <- names(training) %in% missing
+training <- training[!varDrop]
+dim(training)
+```
+
+As a final step in feature selection, I drop the first 6 columns, which contain identifier information.  Future work would do well to examine whether there are systematic differences in individual performance across each of the five classes (for instance, by including  participant fixed effects).  However, for the purpose of this assignment, I drop participant information in an effort to discover how  general performance indicators predict the class of movement.  While it is also possible that time is correlated with performance - for example, if participants become fatigued as their training progresses - I exclude the time features from the analysis as well, and leave this question open to future work.  
+```{r}
+training <- training[,-(1:6)]
+```
+The final training dataset includes classe, the dependent variable, and 52 performance indicators that are missing <90% of data and vary more than 5% across all observations. 
+
+## Analysis
+###Prediction on the Training Data
+
+I predict class using four functions: trees, random forests, linear discriminant analysis, and a final model which combines these three predictors.
+
+**Prediction Model One:  Decision Tree**
+
+```{r, cache = TRUE}
+modFitDT <- rpart(classe ~ ., data = training, method = "class")
+fancyRpartPlot(modFitDT, cex = 0.4, under.cex = 1)
+predDT_train <- predict(modFitDT, training, type = "class")
+```
+
+**Prediction Model Two:  Random Forest**
+
+```{r, cache = TRUE}
+modFitRF <- randomForest(classe ~ ., data = training, method = "class")
+predRF_train <- predict(modFitRF, training)
+```
+
+**Prediction Model Three:  Linear Discriminant Analysis**
+
+```{r, cache = TRUE}
+modFitLDA <- train(classe ~ ., data = training, method = "lda")
+predLDA_train <- predict(modFitLDA, training)
+```
+
+**Prediction Model Four:  Combining Predictors**
+```{r, cache = TRUE}
+comb_data<-data.frame(tree = predDT_train, rf = predRF_train, lda = predLDA_train, classe = training$classe)
+model_comb<-randomForest(classe~., method = "class", data = comb_data)
+predict_comb_train<-predict(model_comb, comb_data)
+```
+
+###In-sample Accuracy
+
+Based on these four functions, I calculate accuracy *within* the training set. 
+
+```{r, cache = TRUE}
+confusionMatrix(predDT_train, training$classe)
+confusionMatrix(predRF_train, training$classe)
+confusionMatrix(predLDA_train, training$classe)
+confusionMatrix(predict_comb_train, training$classe)
+```
+
+Accuracy is highest for the random forest (approx. 1) and combined models (0.997).  It is substantially lower when predicting with trees (0.754) and linear discriminant analysis (0.704).
+
+###Out-of-sample Accuracy
+
+In-sample accuracy is likely an overestimate, since the model was trained on these data, and thus likely overdetermined.  To get a better sense of accuracy, I use the same models to predict classification on the validation dataset.
+
+```{r}
+pred_tree_val<-predict(modFitDT, validation, type = "class")
+pred_rf_val<-predict(modFitRF, validation, type = "class")
+pred_lda_val<-predict(modFitLDA, validation)
+comb_data_val = data.frame(tree = pred_tree_val, rf = pred_rf_val, lda = pred_lda_val, classe = validation$classe)
+pred_comb_val = predict(model_comb, comb_data_val)
+#Calculate the accuracy
+accuracy_tree = sum(pred_tree_val == validation$classe) / length(pred_tree_val)
+accuracy_rf = sum(pred_rf_val == validation$classe) / length(pred_rf_val)
+accuracy_lda = sum(pred_lda_val == validation$classe) / length(pred_lda_val)
+accuracy_comb = sum(pred_comb_val == comb_data_val$classe) / length(pred_comb_val)
+print(data.frame(accuracy_tree = accuracy_tree, accuracy_rf = accuracy_rf, accuracy_lda = accuracy_lda, accuracy_comb = accuracy_comb))
+```
+
+When used to predict classifications in the validation data set, estimates generated using the random forest model are most accurate, outperforming predictions based on trees, linear discriminant modeling, and a model combining predictors.
+
+###Prediction on the Test Data
+
+Since the random forest model outperformed all others, I use it to predict class for the 20 observations in the test dataset.  
+
+```{r}
+predRF_test <- predict(modFitRF, testing)
+predRF_test
+```
+
+I submitted these predictions, and all 20 were correct.
